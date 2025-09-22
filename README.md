@@ -1,6 +1,6 @@
 # Montis Peaks 3D 🏔️
 
-**Montis Peaks 3D** is an **interactive mountaineering platform** that brings the mountains of Kashmir to life through **realistic 3D models (Gaussian Splatting)**.  
+**Montis Peaks 3D** is an **interactive mountaineering platform** that brings the mountains r to life through **realistic 3D models (Gaussian Splatting)**.  
 It is designed to help climbers, trekkers, and researchers explore terrain digitally before they set foot on it — making expeditions **smarter, safer, and more accessible**.  
 
 ---
