@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Peaks3D — Flask</title>
+  <style>
+    :root { color-scheme: dark; }
+    html, body { height:100%; margin:0; padding:0; }
+    body { background:#0b1020; color:#e7eefb; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    #view { position:fixed; inset:0; }
+    #hud  { position:fixed; top:12px; right:12px; background:#0b1226cc; border:1px solid #1a2340; padding:8px 10px; border-radius:10px; font-size:12px; }
+    #panel { position:fixed; left:12px; bottom:12px; background:#00000099; backdrop-filter: blur(6px);
+             border:1px solid #ffffff22; border-radius:12px; padding:10px; width:min(92vw,380px); }
+    #panel h1 { margin:0 0 8px 0; font-size:14px; color:#cfe5ff; display:flex; justify-content:space-between; align-items:center; }
+    .row { display:flex; gap:8px; align-items:center; margin:6px 0; }
+    .muted { font-size:12px; color:#b7c8e9; opacity:.85; }
+    input[type="file"] { width:100%; }
+    select, input[type="range"], button { width:100%; }
+    button { background:#1a3bff; color:#fff; border:0; padding:8px 10px; border-radius:10px; cursor:pointer; }
+    button.ghost { background:#00000040; border:1px solid #ffffff22; }
+    .grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; }
+    #canvas { position:absolute; inset:0; display:block; width:100%; height:100%; }
+    #toggle { position: fixed; left:12px; bottom:12px; padding:8px 10px; border-radius:10px; border:1px solid #ffffff22; background:#00000060; }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.161.0/build/three.module.js",
+      "three/examples/jsm/": "https://unpkg.com/three@0.161.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+<div id="view">
+  <canvas id="canvas"></canvas>
+  <div id="hud"></div>
+
+  <div id="panel">
+    <h1>
+      <span>Peaks3D — Controls</span>
+      <button id="btnHide" class="ghost" style="width:auto;padding:6px 8px;">Hide</button>
+    </h1>
+
+    <!-- Upload controls removed: shared model is always used -->
+    <div class="muted">Shared model <b>check.ply</b> is always loaded for all users. Hazards and routes are persistent and visible to everyone.</div>
+
+    <!-- User authentication UI -->
+    <div class="row" id="authRow">
+      <input id="username" type="text" placeholder="Username" autocomplete="username" style="width:40%"/>
+      <input id="password" type="password" placeholder="Password" autocomplete="current-password" style="width:40%"/>
+    </div>
+    <div class="row" id="authBtnRow">
+      <button id="btnLogin" class="ghost">Login</button>
+      <button id="btnSignup" class="ghost">Sign Up</button>
+      <button id="btnLogout" class="ghost" style="display:none">Logout</button>
+      <span id="authStatus" class="muted" style="margin-left:8px"></span>
+    </div>
+
+    <div class="row">
+      <select id="overlay">
+        <option value="none">Overlay: None</option>
+        <option value="slope">Overlay: Slope</option>
+        <option value="risk">Overlay: Risk</option>
+      </select>
+    </div>
+
+    <!-- <div class="row">
+      <label class="muted" style="min-width:90px">Max slope</label>
+      <input id="maxSlope" type="range" min="10" max="80" step="1" value="55"/>
+      <span id="maxSlopeVal" class="muted" style="min-width:34px;text-align:right;">55°</span>
+    </div> -->
+
+    <!-- <div class="row">
+      <label class="muted" style="min-width:90px">Risk power</label>
+      <input id="riskPow" type="range" min="1" max="4" step="0.05" value="2"/>
+      <span id="riskPowVal" class="muted" style="min-width:34px;text-align:right;">2.00</span>
+    </div> -->
+
+    <div class="grid3">
+      <button id="btnFast" class="ghost">Fast</button>
+      <button id="btnSafe" class="ghost">Safe</button>
+      <button id="btnClear" class="ghost">Clear</button>
+    </div>
+
+    <div class="muted" style="margin-top:6px;">
+      Start: <span id="startText">—</span> &nbsp;·&nbsp;
+      Goal: <span id="goalText">—</span> &nbsp;·&nbsp;
+      Route: <span id="routeText">—</span>
+    </div>
+
+    <div class="muted" style="margin-top:6px;">Tips: Click to probe · <b>Alt+Click</b> start · <b>Ctrl+Click</b> goal</div>
+  </div>
+</div>
+
+<button id="toggle" style="display:none;">Show controls</button>
+
+<script type="module" src="/static/viewer.js"></script>
+</body>
+</html>
