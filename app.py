@@ -11,6 +11,17 @@ app = Flask(__name__)
 BASE_DIR = os.path.dirname(__file__)
 app.config["UPLOAD_FOLDER"] = os.path.join(BASE_DIR, "uploads")
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
+from models import (
+    _as_mesh,
+    load_mesh_to_arrays,
+    estimate_normals,
+    slope_from_normals,
+    risk_from_slope,
+    build_graph,
+    snap_to_feasible,
+    dijkstra_route,
+    kmeans_numpy,
+)
 
 
 # In-memory geometry store (file -> arrays). Metadata persists via SQLite.
@@ -129,222 +140,6 @@ def load_default_model():
     DEFAULT_MODEL_ID = mid
     print(f"Loaded default model: {model_path} as id {mid}")
 
-
-
-# ------------------------- Geometry utilities ------------------------- #
-def _as_mesh(scene_or_mesh):
-    """Convert a trimesh.Scene to a single Trimesh by concatenation."""
-    if isinstance(scene_or_mesh, trimesh.Scene):
-        geoms = list(scene_or_mesh.geometry.values())
-        if not geoms:
-            raise ValueError("scene has no geometry")
-        return trimesh.util.concatenate(geoms)
-    return scene_or_mesh
-
-def load_mesh_to_arrays(path: str):
-    """
-    Load .ply or .obj (and friends) into arrays.
-    Returns (P[N,3], idx[3T] or None, normals[N,3], bounds dict)
-    """
-    m = trimesh.load(path, process=False)
-    m = _as_mesh(m)
-
-    if isinstance(m, trimesh.points.PointCloud):
-        P = np.asarray(m.vertices, dtype=np.float32)
-        idx = None
-        normals = estimate_normals(P)
-    else:
-        if not hasattr(m, "vertices"):
-            m = trimesh.load_mesh(path, process=False)
-        P = np.asarray(m.vertices, dtype=np.float32)
-        idx = None
-        if hasattr(m, "faces") and m.faces is not None and len(m.faces) > 0:
-            idx = np.asarray(m.faces, dtype=np.uint32).reshape(-1)
-        normals = None
-        if hasattr(m, "vertex_normals") and m.vertex_normals is not None and len(m.vertex_normals) == len(P):
-            normals = np.asarray(m.vertex_normals, dtype=np.float32)
-        if normals is None:
-            if idx is not None:
-                _ = m.vertex_normals  # triggers compute
-                normals = np.asarray(m.vertex_normals, dtype=np.float32)
-            else:
-                normals = estimate_normals(P)
-
-    bounds = dict(
-        min=dict(x=float(P[:,0].min()), y=float(P[:,1].min()), z=float(P[:,2].min())),
-        max=dict(x=float(P[:,0].max()), y=float(P[:,1].max()), z=float(P[:,2].max())),
-    )
-    return P, idx, normals, bounds
-
-def estimate_normals(P: np.ndarray, k: int = 16) -> np.ndarray:
-    tree = cKDTree(P)
-    normals = np.empty_like(P, dtype=np.float32)
-    k = min(k, len(P))
-    for i in range(P.shape[0]):
-        _, idx = tree.query(P[i], k=k)
-        pts = P[idx]
-        C = np.cov(pts.T)
-        _, v = np.linalg.eigh(C)
-        n = v[:, 0]
-        if n[2] < 0: n = -n
-        normals[i] = n
-    return normals
-
-def slope_from_normals(normals: np.ndarray) -> np.ndarray:
-    nz = np.clip(normals[:,2], -1.0, 1.0)
-    return np.degrees(np.arccos(nz)).astype(np.float32)
-
-def risk_from_slope(s: t.Union[np.ndarray,float]) -> np.ndarray:
-    s = np.clip(s, 0, 90)
-    lo = 1/(1+np.exp(-(s-22)/3))
-    hi = 1/(1+np.exp(-(40-s)/3))
-    return np.clip(lo*hi, 0, 1)
-
-def build_graph(count: int, indices: np.ndarray|None, P: np.ndarray|None=None,
-                knn: int=16, max_nodes_knn: int=300_000) -> list[list[int]]|None:
-    if indices is not None:
-        G: list[list[int]] = [[] for _ in range(count)]
-        tris = indices.reshape(-1,3)
-        for a,b,c in tris:
-            G[a].extend([b,c]); G[b].extend([a,c]); G[c].extend([a,b])
-        for i in range(count): G[i] = sorted(set(G[i]))
-        return G
-    if P is None or count==0: return None
-    if count > max_nodes_knn:
-        app.logger.warning("kNN graph skipped: %d > %d", count, max_nodes_knn)
-        return None
-    tree = cKDTree(P)
-    kq = min(knn+1, count)
-    nbrs = tree.query(P, k=kq)[1]
-    if nbrs.ndim==1: nbrs = nbrs.reshape(-1,1)
-    nbrs = nbrs[:,1:]
-    return [sorted(set(row.tolist())) for row in nbrs]
-
-def snap_to_feasible(P: np.ndarray, S: np.ndarray, ix: int, maxSlope: float) -> int:
-    if 0 <= ix < len(S) and S[ix] <= maxSlope: return int(ix)
-    good = np.where(S <= maxSlope)[0]
-    if good.size == 0: return int(ix)
-    tree = cKDTree(P[good]); _, j = tree.query(P[int(ix)])
-    return int(good[int(j)])
-
-def dijkstra_route(
-    G: list[list[int]],
-    P: np.ndarray,
-    S: np.ndarray,
-    start: int,
-    goal: int,
-    mode: str,
-    maxSlope: float,
-    riskPow: float,
-    soft: bool = True,
-):
-    """
-    FAST  => pure geometric shortest path (no slope gating / penalties)
-    SAFE  => geometric distance * (1 + risk penalty), with 'soft' slope penalty above maxSlope
-    """
-    import heapq
-
-    N = len(G)
-    if N == 0: 
-        return None
-
-    # Clamp indices
-    start = int(np.clip(start, 0, N - 1))
-    goal  = int(np.clip(goal,  0, N - 1))
-
-    dist = np.full(N, np.inf)
-    prev = np.full(N, -1, dtype=np.int32)
-    seen = np.zeros(N, bool)
-    pq: list[tuple[float, int]] = []
-
-    def edge_cost(u: int, v: int) -> float:
-        x1, y1, z1 = P[u]
-        x2, y2, z2 = P[v]
-        dx, dy, dz = (x2 - x1), (y2 - y1), (z2 - z1)
-        d3 = float(np.sqrt(dx * dx + dy * dy + dz * dz))
-
-        if mode == "fast":
-            # pure geometric shortest path
-            return d3
-
-        # SAFE mode
-        s1, s2 = float(S[u]), float(S[v])
-        if not soft and (s1 > maxSlope or s2 > maxSlope):
-            return np.inf
-
-        # risk term (0..1) then ^riskPow to accentuate
-        r = float(risk_from_slope(np.array([s1, s2])).mean()) ** max(riskPow, 1e-6)
-
-        # soft penalty for exceeding maxSlope (smoothly increases cost)
-        over = max(0.0, max(s1, s2) - maxSlope)
-        pen = 1.0
-        if soft and over > 0:
-            frac = over / max(1.0, 90.0 - maxSlope)
-            pen *= (1.0 + 9.0 * (frac ** 2))  # up to 10x
-
-        return d3 * (1.0 + 4.0 * r) * pen
-
-    dist[start] = 0.0
-    heapq.heappush(pq, (0.0, start))
-
-    while pq:
-        du, u = heapq.heappop(pq)
-        if seen[u]:
-            continue
-        seen[u] = True
-        if u == goal:
-            break
-        for v in G[u]:
-            c = edge_cost(u, v)
-            if not np.isfinite(c):
-                continue
-            nd = du + c
-            if nd < dist[v]:
-                dist[v] = nd
-                prev[v] = u
-                heapq.heappush(pq, (nd, v))
-
-    if not np.isfinite(dist[goal]):
-        return None
-
-    # Reconstruct & stats
-    path: list[int] = []
-    v = goal
-    while v != -1:
-        path.append(int(v))
-        v = int(prev[v])
-    path.reverse()
-
-    length = 0.0
-    gain = 0.0
-    for i in range(1, len(path)):
-        a, b = path[i - 1], path[i]
-        dx, dy, dz = (P[b] - P[a]).tolist()
-        length += float(np.sqrt(dx * dx + dy * dy + dz * dz))
-        if dz > 0:
-            gain += dz
-
-    return dict(path=path, lengthKm=length / 1000.0, gainM=gain)
-
-
-
-# ------------------------------ K-means ------------------------------ #
-def kmeans_numpy(X: np.ndarray, k: int, iters: int=20, seed: int=42):
-    rng = np.random.default_rng(seed)
-    n = X.shape[0]
-    if n==0: return np.zeros(0, dtype=np.int32), np.zeros((k,X.shape[1]))
-    init_idx = rng.choice(n, size=min(k,n), replace=False)
-    C = X[init_idx].copy()
-    L = np.zeros(n, dtype=np.int32)
-    for _ in range(iters):
-        d2 = ((X[:,None,:]-C[None,:,:])**2).sum(-1)
-        L_new = d2.argmin(axis=1).astype(np.int32)
-        if np.array_equal(L_new, L): break
-        L = L_new
-        for j in range(k):
-            pts = X[L==j]
-            if len(pts)>0: C[j]=pts.mean(axis=0)
-    return L, C
 
 # ------------------------------ Presets ------------------------------ #
 # Only two options are exposed to the client: 'fast' and 'safe'.
